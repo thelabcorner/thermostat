@@ -1,0 +1,26 @@
+[package]
+name = "thermostat-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+thermostat-core = { path = "../crates/thermostat-core" }
+
+[[bin]]
+name = "event-sequences"
+path = "fuzz_targets/event_sequences.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "config-inputs"
+path = "fuzz_targets/config_inputs.rs"
+test = false
+doc = false
+bench = false

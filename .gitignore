@@ -1,4 +1,9 @@
 /target/
+fuzz/target/
+fuzz/artifacts/
+fuzz/corpus/
+models/formal/states/
+mutants.out/
 /node_modules/
 /dist/
 /.idea/
@@ -13,4 +18,3 @@
 *.log
 .DS_Store
 Thumbs.db
-
