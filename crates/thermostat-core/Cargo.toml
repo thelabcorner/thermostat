@@ -1,0 +1,16 @@
+[package]
+name = "thermostat-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+thermostat-model = { path = "../thermostat-model" }
+
+[dev-dependencies]
+proptest = "1"
+
+[lints]
+workspace = true
+
