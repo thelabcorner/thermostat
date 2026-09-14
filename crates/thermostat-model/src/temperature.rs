@@ -41,7 +41,10 @@ impl MilliCelsius {
         }
 
         let milli = value * 1000.0;
-        if milli < f64::from(Self::MIN.0) || milli > f64::from(Self::MAX.0) {
+        if milli < f64::from(Self::MIN.0) {
+            return Err(TemperatureError::OutOfRange);
+        }
+        if milli > f64::from(Self::MAX.0) {
             return Err(TemperatureError::OutOfRange);
         }
 
@@ -89,5 +92,42 @@ mod tests {
             MilliCelsius::from_celsius(f64::INFINITY),
             Err(TemperatureError::NotFinite)
         );
+    }
+
+    #[test]
+    fn integer_constructor_accepts_closed_domain_and_rejects_neighbors() {
+        assert_eq!(
+            MilliCelsius::from_milli_celsius(MilliCelsius::MIN.as_milli_celsius()),
+            Some(MilliCelsius::MIN)
+        );
+        assert_eq!(
+            MilliCelsius::from_milli_celsius(MilliCelsius::MAX.as_milli_celsius()),
+            Some(MilliCelsius::MAX)
+        );
+        assert_eq!(MilliCelsius::from_milli_celsius(-100_001), None);
+        assert_eq!(MilliCelsius::from_milli_celsius(200_001), None);
+    }
+
+    #[test]
+    fn floating_constructor_rejects_finite_values_outside_domain() {
+        assert_eq!(
+            MilliCelsius::from_celsius(-100.001),
+            Err(TemperatureError::OutOfRange)
+        );
+        assert_eq!(
+            MilliCelsius::from_celsius(200.001),
+            Err(TemperatureError::OutOfRange)
+        );
+        assert_eq!(MilliCelsius::from_celsius(-100.0), Ok(MilliCelsius::MIN));
+        assert_eq!(MilliCelsius::from_celsius(200.0), Ok(MilliCelsius::MAX));
+    }
+
+    #[test]
+    fn accessors_and_display_are_stable() {
+        let value = MilliCelsius::from_milli_celsius(21_063)
+            .unwrap_or_else(|| panic!("test value must be in range"));
+        assert_eq!(value.as_milli_celsius(), 21_063);
+        assert!((value.as_celsius() - 21.063).abs() < f64::EPSILON);
+        assert_eq!(value.to_string(), "21.063 °C");
     }
 }

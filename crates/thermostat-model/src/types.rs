@@ -76,9 +76,4 @@ impl OutputVector {
     pub const fn is_all_off(self) -> bool {
         !self.w && !self.y && !self.g
     }
-
-    #[must_use]
-    pub const fn has_heat_cool_conflict(self) -> bool {
-        self.w && self.y
-    }
 }

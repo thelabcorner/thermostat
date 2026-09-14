@@ -86,7 +86,6 @@ pub enum ConfigError {
     HeatMappingInvalid,
     CoolMappingInvalid,
     FanMappingInvalid,
-    HeatCoolConflict,
 }
 
 impl ControllerConfig {
@@ -117,14 +116,14 @@ impl ControllerConfig {
         if !profile.cool.y || profile.cool.w {
             return Err(ConfigError::CoolMappingInvalid);
         }
-        if !profile.fan_only.g || profile.fan_only.w || profile.fan_only.y {
+        if !profile.fan_only.g {
             return Err(ConfigError::FanMappingInvalid);
         }
-
-        for output in [profile.idle, profile.heat, profile.cool, profile.fan_only] {
-            if output.has_heat_cool_conflict() {
-                return Err(ConfigError::HeatCoolConflict);
-            }
+        if profile.fan_only.w {
+            return Err(ConfigError::FanMappingInvalid);
+        }
+        if profile.fan_only.y {
+            return Err(ConfigError::FanMappingInvalid);
         }
 
         Ok(self)
@@ -173,5 +172,49 @@ mod tests {
         let mut invalid = config();
         invalid.comfort.cool_off = invalid.comfort.heat_off;
         assert_eq!(invalid.validate(), Err(ConfigError::AutoBandOverlap));
+    }
+
+    #[test]
+    fn each_invalid_hysteresis_relation_is_rejected() {
+        let mut heat = config();
+        heat.comfort.heat_on = heat.comfort.heat_off;
+        assert_eq!(heat.validate(), Err(ConfigError::HeatHysteresisInvalid));
+
+        let mut cool = config();
+        cool.comfort.cool_off = cool.comfort.cool_on;
+        assert_eq!(cool.validate(), Err(ConfigError::CoolHysteresisInvalid));
+    }
+
+    #[test]
+    fn each_equipment_action_mapping_is_validated() {
+        let mut idle = config();
+        idle.equipment.idle.g = true;
+        assert_eq!(idle.validate(), Err(ConfigError::IdleMustBeOff));
+
+        let mut heat = config();
+        heat.equipment.heat.w = false;
+        assert_eq!(heat.validate(), Err(ConfigError::HeatMappingInvalid));
+
+        let mut cool = config();
+        cool.equipment.cool.y = false;
+        assert_eq!(cool.validate(), Err(ConfigError::CoolMappingInvalid));
+
+        let mut fan = config();
+        fan.equipment.fan_only.g = false;
+        assert_eq!(fan.validate(), Err(ConfigError::FanMappingInvalid));
+
+        let mut fan_with_heat = config();
+        fan_with_heat.equipment.fan_only.w = true;
+        assert_eq!(
+            fan_with_heat.validate(),
+            Err(ConfigError::FanMappingInvalid)
+        );
+
+        let mut fan_with_cool = config();
+        fan_with_cool.equipment.fan_only.y = true;
+        assert_eq!(
+            fan_with_cool.validate(),
+            Err(ConfigError::FanMappingInvalid)
+        );
     }
 }

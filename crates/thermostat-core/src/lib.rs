@@ -5,9 +5,11 @@
 //! replayable, fuzzable, and suitable for simulation before GPIO exists.
 
 mod controller;
+mod invariants;
 mod state;
 
-pub use controller::{Event, Transition, step};
+pub use controller::{Event, Transition, TransitionRecord, step};
+pub use invariants::{InvariantViolation, validate_output_vector, validate_state};
 pub use state::{ControlTemperature, ControllerState, CriticalFault, Phase};
 pub use thermostat_model::{
     BlockReason, ComfortConfig, ConfigError, ControllerConfig, Demand, EquipmentAction,

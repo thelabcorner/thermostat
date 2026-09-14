@@ -3,7 +3,9 @@ use thermostat_model::{
     OutputVector,
 };
 
-use crate::{ControlTemperature, ControllerState, CriticalFault, MilliCelsius, Phase};
+use crate::{
+    ControlTemperature, ControllerState, CriticalFault, MilliCelsius, Phase, validate_output_vector,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Event {
@@ -29,6 +31,49 @@ pub struct Transition {
     pub block_reason: BlockReason,
     pub next_deadline_ms: Option<u64>,
     pub state: ControllerState,
+}
+
+/// Compact semantic record suitable for persistence/replay without exposing a
+/// raw relay-write API.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TransitionRecord {
+    pub at_ms: u64,
+    pub event: Event,
+    pub previous_action: EquipmentAction,
+    pub next_action: EquipmentAction,
+    pub previous_outputs: OutputVector,
+    pub next_outputs: OutputVector,
+    pub next_phase: Phase,
+    pub next_demand: Demand,
+    pub block_reason: BlockReason,
+    pub next_deadline_ms: Option<u64>,
+}
+
+impl Transition {
+    /// Converts a completed transition into the semantic event record that a
+    /// future persistence layer can append asynchronously.
+    #[must_use]
+    pub const fn record(&self, event: Event, at_ms: u64) -> TransitionRecord {
+        TransitionRecord {
+            at_ms,
+            event,
+            previous_action: self.previous_action,
+            next_action: self.next_action,
+            previous_outputs: self.previous_outputs,
+            next_outputs: self.next_outputs,
+            next_phase: self.state.phase,
+            next_demand: self.state.demand,
+            block_reason: self.block_reason,
+            next_deadline_ms: self.next_deadline_ms,
+        }
+    }
+
+    #[must_use]
+    pub const fn changed_outputs(&self) -> bool {
+        self.previous_outputs.w != self.next_outputs.w
+            || self.previous_outputs.y != self.next_outputs.y
+            || self.previous_outputs.g != self.next_outputs.g
+    }
 }
 
 #[must_use]
@@ -94,10 +139,6 @@ fn evaluate_armed_state(
     now_ms: u64,
     config: ControllerConfig,
 ) -> Transition {
-    let temperature_valid = state
-        .control_temperature
-        .is_some_and(|temperature| now_ms <= temperature.valid_until_ms);
-
     // Mode OFF is intentionally usable without a temperature sensor. Fan ON
     // remains independent, matching conventional thermostat behavior.
     if state.mode == Mode::Off {
@@ -107,7 +148,7 @@ fn evaluate_armed_state(
             FanMode::Auto => EquipmentAction::Idle,
             FanMode::On => EquipmentAction::FanOnly,
         };
-        set_action(&mut state, action, now_ms, config);
+        set_action(&mut state, action, now_ms);
         return finalize_outputs(
             state,
             previous_action,
@@ -118,7 +159,18 @@ fn evaluate_armed_state(
         );
     }
 
-    if !temperature_valid {
+    let Some(control_temperature) = state.control_temperature else {
+        stop_active_conditioning(&mut state, now_ms);
+        return safe_transition(
+            state,
+            BlockReason::SensorInvalid,
+            None,
+            previous_action,
+            previous_outputs,
+            now_ms,
+        );
+    };
+    if now_ms > control_temperature.valid_until_ms {
         stop_active_conditioning(&mut state, now_ms);
         return safe_transition(
             state,
@@ -130,31 +182,20 @@ fn evaluate_armed_state(
         );
     }
 
-    let control_temperature = state.control_temperature.map(|value| value.value);
-    let Some(control_temperature) = control_temperature else {
-        // Defensive fallback; temperature_valid above implies this branch is
-        // unreachable, but keeping the fail-safe local avoids relying on that
-        // implication across future refactors.
-        return safe_transition(
-            state,
-            BlockReason::SensorInvalid,
-            None,
-            previous_action,
-            previous_outputs,
-            now_ms,
-        );
-    };
-
-    let demand = calculate_demand(&state, control_temperature, config);
+    let demand = calculate_demand(&state, control_temperature.value, config);
     state.demand = demand;
 
-    let mut deadline = apply_active_cycle_policy(&mut state, demand, now_ms, config);
+    let sensor_deadline = sensor_expiry_deadline(&state);
+    let mut deadline = min_deadline(
+        apply_active_cycle_policy(&mut state, demand, now_ms, config),
+        sensor_deadline,
+    );
 
-    // If a min-run gate kept the current conditioning action active, do not
-    // evaluate a replacement action yet.
-    if matches!(state.action, EquipmentAction::Heat | EquipmentAction::Cool)
-        && state.block_reason != BlockReason::None
+    if let Some((block_reason, family_deadline)) =
+        family_reversal_break(&mut state, previous_action, demand, now_ms, config)
     {
+        state.block_reason = block_reason;
+        deadline = min_deadline(deadline, Some(family_deadline));
         return finalize_outputs(
             state,
             previous_action,
@@ -165,16 +206,29 @@ fn evaluate_armed_state(
         );
     }
 
-    if matches!(
-        state.action,
-        EquipmentAction::Idle | EquipmentAction::FanOnly
-    ) {
-        let (next_action, block_reason, start_deadline) =
-            choose_idle_action(&state, demand, now_ms, config);
-        state.block_reason = block_reason;
-        deadline = min_deadline(deadline, start_deadline);
-        set_action(&mut state, next_action, now_ms, config);
+    // If the active-cycle policy left conditioning active, no replacement
+    // action may be selected on this evaluation. This is true both while
+    // demand remains in-family and while a minimum-run gate is holding the
+    // cycle, so conditioning state itself is the complete predicate.
+    if matches!(state.action, EquipmentAction::Heat | EquipmentAction::Cool) {
+        return finalize_outputs(
+            state,
+            previous_action,
+            previous_outputs,
+            deadline,
+            now_ms,
+            config,
+        );
     }
+
+    // The active-family case returned above, so the remaining exhaustive
+    // EquipmentAction variants are Idle/FanOnly and are eligible for start
+    // selection.
+    let (next_action, block_reason, start_deadline) =
+        choose_idle_action(&state, demand, now_ms, config);
+    state.block_reason = block_reason;
+    deadline = min_deadline(deadline, start_deadline);
+    set_action(&mut state, next_action, now_ms);
 
     finalize_outputs(
         state,
@@ -466,6 +520,43 @@ fn mode_allows_action(mode: Mode, action: EquipmentAction) -> bool {
     }
 }
 
+fn demand_is_opposite(action: EquipmentAction, demand: Demand) -> bool {
+    matches!(
+        (action, demand),
+        (EquipmentAction::Heat, Demand::Cool) | (EquipmentAction::Cool, Demand::Heat)
+    )
+}
+
+fn family_reversal_break(
+    state: &mut ControllerState,
+    previous_action: EquipmentAction,
+    demand: Demand,
+    now_ms: u64,
+    config: ControllerConfig,
+) -> Option<(BlockReason, u64)> {
+    if !demand_is_opposite(previous_action, demand) {
+        return None;
+    }
+
+    // `apply_active_cycle_policy` normally performs this stop first. Keep the
+    // break operation defensive here as well: if a future refactor changes
+    // that ordering, an opposite-family demand still cannot leave the old
+    // conditioning family energized while the reversal is being scheduled.
+    if matches!(state.action, EquipmentAction::Heat | EquipmentAction::Cool) {
+        stop_active_conditioning(state, now_ms);
+    }
+
+    // Family reversals are always break-before-make. Even with a configured
+    // zero-duration changeover, emit an observable idle/fan-only transition
+    // and schedule a reevaluation one monotonic millisecond later rather than
+    // transforming a heat vector directly into a cool vector in one commit.
+    let (_, block_reason, start_deadline) = choose_idle_action(state, demand, now_ms, config);
+    Some(match start_deadline {
+        Some(deadline) => (block_reason, deadline),
+        None => (BlockReason::ChangeoverDelay, now_ms.saturating_add(1)),
+    })
+}
+
 fn fan_idle_action(fan_mode: FanMode) -> EquipmentAction {
     match fan_mode {
         FanMode::Auto => EquipmentAction::Idle,
@@ -473,12 +564,7 @@ fn fan_idle_action(fan_mode: FanMode) -> EquipmentAction {
     }
 }
 
-fn set_action(
-    state: &mut ControllerState,
-    action: EquipmentAction,
-    now_ms: u64,
-    _config: ControllerConfig,
-) {
+fn set_action(state: &mut ControllerState, action: EquipmentAction, now_ms: u64) {
     if state.action == action {
         state.phase = phase_for(action);
         return;
@@ -551,6 +637,15 @@ fn stopped_deadline(stopped_at: Option<u64>, minimum_ms: u64, now_ms: u64) -> Op
     (now_ms < deadline).then_some(deadline)
 }
 
+fn sensor_expiry_deadline(state: &ControllerState) -> Option<u64> {
+    let valid_until = state.control_temperature?.valid_until_ms;
+    // A sample is defined as valid through `valid_until_ms` inclusively. The
+    // first instant at which its validity can change is therefore +1 ms. A
+    // saturated `u64::MAX` validity has no representable expiry deadline and
+    // must not schedule an already-due timer that could spin the event loop.
+    valid_until.checked_add(1)
+}
+
 fn opposite_changeover_deadline(
     state: &ControllerState,
     requested: EquipmentFamily,
@@ -598,7 +693,7 @@ fn finalize_outputs(
     let base = config.equipment.outputs_for(state.action);
     let outputs = apply_fan_override(state.action, state.fan_mode, base, config);
 
-    if outputs.has_heat_cool_conflict() {
+    if validate_output_vector(outputs).is_err() {
         state.critical_fault = Some(CriticalFault::OutputInvariantViolation);
         force_safe(&mut state, BlockReason::CriticalFault, now_ms);
         return finish(state, previous_action, previous_outputs, None, now_ms);
@@ -765,7 +860,7 @@ mod tests {
             state,
             Event::SetControlTemperature {
                 value: mc(22_000),
-                valid_for_ms: 60_000,
+                valid_for_ms: 1_000_000,
             },
             300_001,
             config(),
