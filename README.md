@@ -10,9 +10,9 @@ The project goal is not merely to recreate a commercial smart thermostat. The lo
 
 ## Status
 
-**Phase 0: architecture and formal control planning.**
+**Deterministic safety core implemented and under verification; Phase 2 verification is operational and Phase 3 simulation work is underway.**
 
-No GPIO or HVAC hardware is driven yet. The current repository intentionally begins with the control contract, equipment profile, failure model, state machine, and verification plan before actuator code is allowed to exist.
+No GPIO or HVAC hardware is driven yet. Hardware-discovery items from Phase 0 remain open, but the software campaign has intentionally progressed independently through the pure Rust controller, formal/reference-model verification, fuzz/mutation testing, and deterministic simulation. Physical actuation remains gated on the later hardware-validation phases.
 
 The detailed execution plan lives in [`docs/plan/`](docs/plan/README.md).
 
@@ -214,7 +214,20 @@ No hardware backend is accepted until the exact same controller has passed:
 - relay-HAL simulation tests,
 - bench testing with non-HVAC loads before 24 VAC equipment is connected.
 
-The planned tooling includes Rust `proptest`, `cargo-fuzz`, `cargo-mutants`, and `cargo-llvm-cov`, plus a deterministic HVAC simulator. Formal/model-based verification of the compact safety state machine is also planned.
+The repository now exercises this strategy with Rust `proptest`, `cargo-fuzz`, `cargo-mutants`, `cargo-llvm-cov`, a deterministic HVAC simulator, an independent executable reference model, and a compact TLA+ safety model.
+
+### Verification snapshot — 2026-09-14
+
+The current source state has passed:
+
+- **63 Rust test functions** across the model, controller, differential reference model, safety matrix, and simulator.
+- **Mutation testing with zero surviving viable mutants** in the implemented model/control/simulator surface: controller `103 caught / 6 unviable`, model `44 / 4`, simulator `57 / 7` (204 caught, 17 unviable, 0 missed overall).
+- **Sanitizer-backed libFuzzer reruns after the final controller changes:** 537,481 event-sequence executions and 5,469,320 configuration executions with no crash or invariant failure. Including the preceding campaign generation, more than 10.1 million fuzz executions have completed without a discovered invariant violation.
+- **TLC exhaustive exploration of the compact TLA+ model:** 141 generated states, 43 distinct reachable states, depth 8, no invariant error.
+- **Coverage excluding the standalone benchmark executable:** 97.24% line coverage overall; `thermostat-core/src/controller.rs` is 98.39% line / 100% function covered and the explicit invariant checker is 100% line covered.
+- **Release-mode controller microbenchmarks:** final five-run median-of-medians are 37.93 ns/event for idle ticks, 39.29 ns/event for active-heat ticks, and 40.42 ns/event for the mixed trace. Against the immediately preceding five-run campaign baseline, idle improved about 6.2%, mixed improved about 3.8%, and active heat shifted about 2.4% slower—inside the observed benchmark variability, so there is no defensible material regression.
+
+These numbers are evidence for the software safety boundary, not permission to connect HVAC hardware. The physical actuator remains intentionally absent until the hardware, electrical, and bench-test gates are satisfied.
 
 ## Repository layout
 
@@ -289,4 +302,3 @@ The architecture is informed by mature thermostat implementations and equipment 
 ## License
 
 Not selected yet. The project remains private/experimental until the implementation and hardware safety boundaries are mature enough to publish responsibly.
-

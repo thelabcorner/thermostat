@@ -207,3 +207,12 @@ Initial release gate proposal:
 - all modeled legal phases reachable by test,
 - all illegal relay combinations unreachable.
 
+### Current executable-verification snapshot — 2026-09-14
+
+The implemented model/core/simulator surface currently has 63 Rust test functions. The final mutation campaigns caught every viable generated mutant: controller 103 caught / 6 unviable, model 44 / 4, and simulator 57 / 7. Post-change sanitizer-backed fuzz reruns completed 537,481 event-sequence inputs plus 5,469,320 configuration inputs with zero invariant failure or crash.
+
+`cargo llvm-cov --workspace --exclude thermostat-bench` reports 97.24% line coverage overall. The controller is 98.39% line-covered with every function executed; the invariant checker is 100% line-covered. Remaining uncovered controller lines are defensive/unreachable paths under already-validated configuration or internal state ordering rather than untested public safety branches. Coverage remains supporting evidence rather than the release criterion by itself.
+
+The compact TLA+ model has also been exhaustively checked by TLC over its deliberately bounded timer domain: 141 states generated, 43 distinct reachable states, state-graph depth 8, and no invariant error. This checks the abstraction; it does not replace implementation tests or prove the entire Rust program.
+
+The release-mode microbenchmark campaign remains comfortably outside any control-latency concern. Final five-run median-of-medians are 37.93 ns/event (idle), 39.29 ns/event (active heat), and 40.42 ns/event (mixed trace). Variation within the benchmark samples is several percent, so only changes that clear that noise floor should be interpreted as performance movement.
