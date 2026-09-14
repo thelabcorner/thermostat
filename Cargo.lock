@@ -265,6 +265,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "thermostat-bench"
+version = "0.1.0"
+dependencies = [
+ "thermostat-core",
+]
+
+[[package]]
 name = "thermostat-core"
 version = "0.1.0"
 dependencies = [
@@ -275,6 +282,13 @@ dependencies = [
 [[package]]
 name = "thermostat-model"
 version = "0.1.0"
+
+[[package]]
+name = "thermostat-sim"
+version = "0.1.0"
+dependencies = [
+ "thermostat-core",
+]
 
 [[package]]
 name = "unarray"
